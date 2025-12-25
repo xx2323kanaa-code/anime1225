@@ -68,6 +68,12 @@ BABYLON.SceneLoader.ImportMeshAsync(
   null, "./", GLB_NAME, scene
 ).then(res=>{
   animGroups = scene.animationGroups || [];
+res.meshes.forEach(m => {
+  if (m.name !== "__root__") {
+    m.scaling.set(20, 20, 20);   // ← まずは20。大きければ10、小さければ50
+  }
+});
+  
   console.log("Hand loaded meshes=", res.meshes.length,
               "animGroups=", animGroups.length);
 }).catch(err=>{
