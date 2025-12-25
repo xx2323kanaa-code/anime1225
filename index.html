@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>Hand GLB Test (Clean)</title>
+
+<script src="https://cdn.babylonjs.com/babylon.js"></script>
+<script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
+
+<style>
+html,body{
+  margin:0; width:100%; height:100%;
+  overflow:hidden; background:#000;
+}
+#renderCanvas{
+  width:100%; height:100%;
+  touch-action:none;
+}
+#hud{
+  position:fixed; left:10px; bottom:10px;
+  z-index:10; display:flex; gap:10px;
+}
+button{
+  padding:10px 14px;
+  font-size:14px;
+  border-radius:10px;
+  border:1px solid #666;
+  background:#111; color:#fff;
+}
+</style>
+</head>
+
+<body>
+<canvas id="renderCanvas"></canvas>
+
+<div id="hud">
+  <button id="btnPlay">Play</button>
+  <button id="btnStop">Stop</button>
+</div>
+
+<script>
+const GLB_NAME = "animetesthand2.glb";
+
+const canvas = document.getElementById("renderCanvas");
+const engine = new BABYLON.Engine(canvas, true);
+const scene  = new BABYLON.Scene(engine);
+scene.clearColor = new BABYLON.Color4(0,0,0,1);
+
+// カメラ：外から見るだけ（中に入らない）
+const camera = new BABYLON.ArcRotateCamera(
+  "cam",
+  Math.PI / 2,
+  Math.PI / 2.2,
+  8,                         // ← 重要：必ず外
+  BABYLON.Vector3.Zero(),
+  scene
+);
+camera.attachControl(canvas, true);
+
+// ライト（最小）
+new BABYLON.HemisphericLight("h", new BABYLON.Vector3(0,1,0), scene);
+
+let animGroups = [];
+
+// ★ 何も触らずロード
+BABYLON.SceneLoader.ImportMeshAsync(
+  null, "./", GLB_NAME, scene
+).then(res=>{
+  animGroups = scene.animationGroups || [];
+  console.log("Hand loaded meshes=", res.meshes.length,
+              "animGroups=", animGroups.length);
+}).catch(err=>{
+  alert("GLB load failed");
+  console.error(err);
+});
+
+engine.runRenderLoop(()=>{
+  scene.render();
+});
+window.addEventListener("resize", ()=>engine.resize());
+
+// 再生制御
+document.getElementById("btnPlay").onclick = ()=>{
+  animGroups.forEach(g=>g.start(true));
+};
+document.getElementById("btnStop").onclick = ()=>{
+  animGroups.forEach(g=>g.stop());
+};
+</script>
+</body>
+</html>
