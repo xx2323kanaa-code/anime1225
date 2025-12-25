@@ -3,96 +3,398 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-<title>Hand GLB Test (Clean)</title>
+<title>Hand GLB Viewer (Stable Final)</title>
 
 <script src="https://cdn.babylonjs.com/babylon.js"></script>
 <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
 
 <style>
-html,body{
-  margin:0; width:100%; height:100%;
-  overflow:hidden; background:#000;
-}
-#renderCanvas{
-  width:100%; height:100%;
-  touch-action:none;
-}
-#hud{
-  position:fixed; left:10px; bottom:10px;
-  z-index:10; display:flex; gap:10px;
-}
-button{
-  padding:10px 14px;
-  font-size:14px;
-  border-radius:10px;
-  border:1px solid #666;
-  background:#111; color:#fff;
-}
+  html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000;}
+  #renderCanvas{width:100%;height:100%;touch-action:none;display:block;}
+  #hudBar{
+    position:fixed; left:10px; right:10px; bottom:10px; z-index:10;
+    display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap;
+    pointer-events:auto;
+  }
+  .btn{
+    padding:10px 12px; font-size:14px; border-radius:12px;
+    border:1px solid rgba(255,255,255,0.25);
+    background:rgba(0,0,0,0.6); color:#fff;
+  }
+  .btn:active{transform:scale(0.98);}
+  #dbg{
+    position:fixed; left:8px; top:8px; right:8px; z-index:11;
+    display:none; max-height:48vh; overflow:auto;
+    padding:10px; border-radius:12px;
+    font:12px/1.35 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    color:#0f0; background:rgba(0,0,0,0.65);
+    border:1px solid rgba(0,255,0,0.25);
+    white-space:pre-wrap;
+  }
+  #toast{
+    position:fixed; left:50%; bottom:72px; transform:translateX(-50%);
+    z-index:12; padding:8px 10px; border-radius:10px;
+    background:rgba(0,0,0,0.75); color:#fff; font-size:13px;
+    display:none;
+  }
 </style>
 </head>
-
 <body>
 <canvas id="renderCanvas"></canvas>
 
-<div id="hud">
-  <button id="btnPlay">Play</button>
-  <button id="btnStop">Stop</button>
+<div id="dbg"></div>
+<div id="toast"></div>
+
+<div id="hudBar">
+  <div style="display:flex; gap:10px; flex-wrap:wrap;">
+    <button class="btn" id="btnLoad">Load</button>
+    <button class="btn" id="btnPlay">Play</button>
+    <button class="btn" id="btnStop">Stop</button>
+    <button class="btn" id="btnReset">Reset View</button>
+  </div>
+  <div style="display:flex; gap:10px; flex-wrap:wrap;">
+    <button class="btn" id="btnScaleDown">Scale -</button>
+    <button class="btn" id="btnScaleUp">Scale +</button>
+    <button class="btn" id="btnHelpers">Helpers: OFF</button>
+    <button class="btn" id="btnDebug">HUD</button>
+    <button class="btn" id="btnCopy">Copy</button>
+  </div>
 </div>
 
 <script>
-const GLB_NAME = "animetesthand2.glb";
+/* =========================
+   CONFIG
+========================= */
+const GLB_NAME = "animetesthand2.glb";   // ← ここだけ変える
+const LOG_MAX = 500;
 
+/* =========================
+   STATE
+========================= */
 const canvas = document.getElementById("renderCanvas");
 const engine = new BABYLON.Engine(canvas, true);
 const scene  = new BABYLON.Scene(engine);
 scene.clearColor = new BABYLON.Color4(0,0,0,1);
 
-// カメラ：外から見るだけ（中に入らない）
 const camera = new BABYLON.ArcRotateCamera(
   "cam",
-  Math.PI / 2,
-  Math.PI / 2.2,
-  8,                         // ← 重要：必ず外
+  Math.PI/2,
+  Math.PI/2.2,
+  8,
   BABYLON.Vector3.Zero(),
   scene
 );
 camera.attachControl(canvas, true);
+camera.lowerRadiusLimit = 0.2;
+camera.upperRadiusLimit = 200;
 
-// ライト（最小）
 new BABYLON.HemisphericLight("h", new BABYLON.Vector3(0,1,0), scene);
+new BABYLON.DirectionalLight("d", new BABYLON.Vector3(-0.6,-1,-0.4), scene);
 
+let container = null;          // AssetContainer
 let animGroups = [];
+let rootNode = null;           // Transform root (container.rootNodes[0] 等)
+let visibleMeshes = [];        // 実メッシュ（頂点>0）
+let helperNodes = [];          // 空/補助
+let debugOn = false;
+let showHelpers = false;
+let logBuf = [];
+let manualScale = 1;
 
-// ★ 何も触らずロード
-BABYLON.SceneLoader.ImportMeshAsync(
-  null, "./", GLB_NAME, scene
-).then(res=>{
-  animGroups = scene.animationGroups || [];
-res.meshes.forEach(m => {
-  if (m.name !== "__root__") {
-    m.scaling.set(20, 20, 20);   // ← まずは20。大きければ10、小さければ50
+/* =========================
+   LOG / UI
+========================= */
+function log(...args){
+  const msg = args.map(a => typeof a === "string" ? a : JSON.stringify(a)).join(" ");
+  const line = `[${new Date().toISOString()}] ${msg}`;
+  logBuf.push(line);
+  if (logBuf.length > LOG_MAX) logBuf.shift();
+  if (debugOn) renderDebug();
+  console.log(...args);
+}
+function toast(s){
+  const t = document.getElementById("toast");
+  t.textContent = s;
+  t.style.display = "block";
+  setTimeout(()=>t.style.display="none", 900);
+}
+function renderDebug(){
+  const dbg = document.getElementById("dbg");
+  const parts = [];
+  parts.push(`=== Hand GLB Viewer ===`);
+  parts.push(`GLB: ${GLB_NAME}`);
+  parts.push(`loaded: ${!!container}`);
+  parts.push(`visibleMeshes: ${visibleMeshes.length}`);
+  parts.push(`helpers: ${helperNodes.length} (show=${showHelpers})`);
+  parts.push(`animGroups: ${animGroups.length}`);
+  parts.push(`manualScale: ${manualScale.toFixed(3)}`);
+  parts.push(`fps: ${engine.getFps().toFixed(1)}`);
+  const caps = engine.getCaps();
+  parts.push(`webgl2: ${caps.supportsWebGL2}`);
+  try{
+    parts.push(`renderer: ${engine.getGlInfo().renderer || "?"}`);
+  }catch(e){}
+  parts.push(`\n=== LAST LOGS (tail 35) ===`);
+  parts.push(logBuf.slice(-35).join("\n"));
+  dbg.textContent = parts.join("\n");
+}
+
+/* =========================
+   CORE: DESTROY / LOAD
+========================= */
+function destroyCurrent(){
+  if (!container) return;
+
+  // stop anim
+  try{ animGroups.forEach(g=>g.stop()); }catch(e){}
+  animGroups = [];
+
+  // remove from scene safely
+  try{ container.removeAllFromScene(); }catch(e){}
+  try{ container.dispose(); }catch(e){}
+
+  container = null;
+  rootNode = null;
+  visibleMeshes = [];
+  helperNodes = [];
+  manualScale = 1;
+
+  log("Destroyed current container.");
+}
+
+function collectNodes(){
+  visibleMeshes = [];
+  helperNodes = [];
+
+  if (!container) return;
+
+  // container.meshes は “読み込んだメッシュ”のみ（scene.meshes全体より安全）
+  for (const m of container.meshes || []){
+    const v = (m.getTotalVertices && m.getTotalVertices()) ? m.getTotalVertices() : 0;
+    if (v > 0){
+      visibleMeshes.push(m);
+    }else{
+      helperNodes.push(m);
+    }
   }
-});
-  
-  console.log("Hand loaded meshes=", res.meshes.length,
-              "animGroups=", animGroups.length);
-}).catch(err=>{
-  alert("GLB load failed");
-  console.error(err);
-});
 
-engine.runRenderLoop(()=>{
+  // rootNodes も helper として扱う（TransformNode等）
+  for (const n of container.rootNodes || []){
+    if (n && n.getTotalVertices && n.getTotalVertices() === 0){
+      helperNodes.push(n);
+    }
+  }
+}
+
+function setHelpersVisible(flag){
+  showHelpers = flag;
+  for (const n of helperNodes){
+    // TransformNodeは isVisible が効かないことがあるが、メッシュなら効く
+    if (typeof n.isVisible === "boolean") n.isVisible = flag;
+    // Meshの場合は念のため
+    if (n.setEnabled) n.setEnabled(flag);
+  }
+  document.getElementById("btnHelpers").textContent = `Helpers: ${showHelpers ? "ON" : "OFF"}`;
+}
+
+function computeBBox(meshes){
+  // 実メッシュの bbox から全体 bbox
+  let min = new BABYLON.Vector3(Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY);
+  let max = new BABYLON.Vector3(Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY);
+
+  for (const m of meshes){
+    const bi = m.getBoundingInfo?.();
+    if (!bi) continue;
+    const b = bi.boundingBox;
+    const wmin = b.minimumWorld;
+    const wmax = b.maximumWorld;
+    min = BABYLON.Vector3.Minimize(min, wmin);
+    max = BABYLON.Vector3.Maximize(max, wmax);
+  }
+  return { min, max, center: min.add(max).scale(0.5), size: max.subtract(min) };
+}
+
+function autoFit(){
+  // 1) 実メッシュが無いなら何もしない（Armature-only等）
+  if (!visibleMeshes.length){
+    log("autoFit skipped: no visible meshes (vertices>0).");
+    toast("No visible mesh");
+    return;
+  }
+
+  // 2) bbox
+  const bb = computeBBox(visibleMeshes);
+  const size = bb.size;
+  const maxDim = Math.max(size.x, size.y, size.z);
+
+  // 3) スケール：目標サイズを「だいたい 1.5〜2」程度に正規化
+  //    ※ maxDim が 0 に近い場合の保険
+  const eps = 1e-6;
+  const target = 1.8;
+  const s = target / Math.max(maxDim, eps);
+
+  // 4) root：container.rootNodes の先頭がルートであることが多い
+  rootNode = (container.rootNodes && container.rootNodes[0]) ? container.rootNodes[0] : null;
+
+  // ルートが取れない場合は “実メッシュ群”を個別に動かす（最悪ケース）
+  if (rootNode && rootNode.scaling){
+    rootNode.scaling.set(s, s, s);
+    // 中心を原点へ
+    rootNode.position = rootNode.position.subtract(bb.center);
+  }else{
+    for (const m of visibleMeshes){
+      m.scaling.set(s, s, s);
+      m.position = m.position.subtract(bb.center);
+    }
+  }
+
+  manualScale = 1;
+
+  // 5) カメラ：bboxに合わせて外側へ
+  camera.setTarget(BABYLON.Vector3.Zero());
+  const dist = Math.max(3.5, 2.5 / s); // 小さいほど距離を取る
+  camera.radius = dist;
+
+  log(`autoFit: maxDim=${maxDim.toFixed(6)} scale=${s.toFixed(6)} camR=${camera.radius.toFixed(3)}`);
+  toast("AutoFit OK");
+}
+
+async function loadGLB(){
+  destroyCurrent();
+  log("Loading GLB:", GLB_NAME);
+
+  try{
+    container = await BABYLON.SceneLoader.LoadAssetContainerAsync("./", GLB_NAME, scene);
+    container.addAllToScene();
+
+    animGroups = container.animationGroups ? [...container.animationGroups] : [];
+    collectNodes();
+
+    // Helpers はデフォルト OFF（球/ガイド/空ノードが暴れない）
+    setHelpersVisible(false);
+
+    // 自動フィット（ここが肝：極小も巨大も潰す）
+    autoFit();
+
+    log(`Loaded. meshes=${(container.meshes||[]).length} visible=${visibleMeshes.length} animGroups=${animGroups.length}`);
+    toast("Loaded");
+  }catch(e){
+    log("Load failed:", String(e));
+    alert("GLB load failed. File name/path/case sensitive を確認。");
+  }
+}
+
+/* =========================
+   PLAY / STOP
+========================= */
+function play(){
+  if (!container){ toast("Load first"); return; }
+  if (!animGroups.length){ toast("No anim"); log("No animationGroups."); return; }
+  animGroups.forEach(g=>{
+    try{ g.start(true); }catch(e){ log("anim start err:", String(e)); }
+  });
+  log("Play");
+}
+function stop(){
+  if (!container){ toast("Stop: no load"); return; }
+  animGroups.forEach(g=>{
+    try{ g.stop(); }catch(e){ log("anim stop err:", String(e)); }
+  });
+  log("Stop");
+}
+
+/* =========================
+   SCALE +/- (safe: root only)
+========================= */
+function applyManualScale(){
+  if (!container) return;
+  const s = manualScale;
+
+  // rootNode 優先
+  if (rootNode && rootNode.scaling){
+    rootNode.scaling.scaleInPlace(s);
+  }else{
+    // 実メッシュのみ
+    visibleMeshes.forEach(m=> m.scaling.scaleInPlace(s));
+  }
+}
+function scaleUp(){
+  if (!container) { toast("Load first"); return; }
+  manualScale = 1.25;
+  applyManualScale();
+  log("ScaleUp x1.25");
+}
+function scaleDown(){
+  if (!container) { toast("Load first"); return; }
+  manualScale = 0.8;
+  applyManualScale();
+  log("ScaleDown x0.8");
+}
+function resetView(){
+  if (!container){ toast("Load first"); return; }
+  // “詰んだらここ” を一発で戻す
+  autoFit();
+  log("ResetView");
+}
+
+/* =========================
+   DEBUG / COPY
+========================= */
+function toggleDebug(){
+  debugOn = !debugOn;
+  document.getElementById("dbg").style.display = debugOn ? "block" : "none";
+  log("HUD:", debugOn ? "ON" : "OFF");
+  if (debugOn) renderDebug();
+}
+async function copyLogs(){
+  const text =
+`=== Hand GLB Viewer Logs ===
+UA: ${navigator.userAgent}
+secureContext: ${isSecureContext}
+GLB: ${GLB_NAME}
+
+--- LOGS ---
+${logBuf.join("\n")}
+`;
+  try{
+    await navigator.clipboard.writeText(text);
+    toast("Copied");
+  }catch(e){
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    try{ document.execCommand("copy"); toast("Copied"); }
+    catch(e2){ alert("Copy failed"); }
+    document.body.removeChild(ta);
+  }
+}
+
+/* =========================
+   LOOP / EVENTS
+========================= */
+engine.runRenderLoop(()=> {
   scene.render();
+  if (debugOn) renderDebug();
 });
-window.addEventListener("resize", ()=>engine.resize());
+window.addEventListener("resize", ()=> engine.resize());
 
-// 再生制御
-document.getElementById("btnPlay").onclick = ()=>{
-  animGroups.forEach(g=>g.start(true));
-};
-document.getElementById("btnStop").onclick = ()=>{
-  animGroups.forEach(g=>g.stop());
-};
+document.getElementById("btnLoad").addEventListener("click", loadGLB);
+document.getElementById("btnPlay").addEventListener("click", play);
+document.getElementById("btnStop").addEventListener("click", stop);
+document.getElementById("btnReset").addEventListener("click", resetView);
+document.getElementById("btnScaleUp").addEventListener("click", scaleUp);
+document.getElementById("btnScaleDown").addEventListener("click", scaleDown);
+document.getElementById("btnHelpers").addEventListener("click", ()=>{
+  setHelpersVisible(!showHelpers);
+  log("Helpers toggled:", showHelpers);
+});
+document.getElementById("btnDebug").addEventListener("click", toggleDebug);
+document.getElementById("btnCopy").addEventListener("click", copyLogs);
+
+log("Boot ready.");
 </script>
 </body>
 </html>
