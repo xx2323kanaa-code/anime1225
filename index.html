@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Camera Lock + Hand Animation Test</title>
+
+<script src="https://cdn.babylonjs.com/babylon.js"></script>
+<script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
+
+<style>
+html,body{
+  margin:0; padding:0;
+  width:100%; height:100%;
+  overflow:hidden;
+  background:#000;
+}
+#wrap{ position:relative; width:100%; height:100%; }
+
+#video{
+  position:absolute; inset:0;
+  width:100%; height:100%;
+  object-fit:cover;
+  z-index:0;
+}
+
+#renderCanvas{
+  position:absolute; inset:0;
+  width:100%; height:100%;
+  z-index:1;
+  background:transparent;
+  touch-action:none;
+}
+
+#hud{
+  position:fixed;
+  left:10px; bottom:10px;
+  z-index:5;
+  display:flex; gap:10px;
+}
+
+.btn{
+  padding:10px 14px;
+  border-radius:10px;
+  font-size:14px;
+  color:#fff;
+  background:rgba(0,0,0,0.6);
+  border:1px solid rgba(255,255,255,0.3);
+}
+</style>
+</head>
+
+<body>
+<div id="wrap">
+  <video id="video" autoplay muted playsinline></video>
+  <canvas id="renderCanvas"></canvas>
+
+  <div id="hud">
+    <button class="btn" id="btnCamera">Camera</button>
+    <button class="btn" id="btnLock">Lock</button>
+    <button class="btn" id="btnPlay">Play</button>
+    <button class="btn" id="btnStop">Stop</button>
+  </div>
+</div>
+
+<script>
+/* ===== 設定 ===== */
+const GLB_NAME = "animetesthand2.glb"; // ★★ 正式名 ★★
+
+/* ===== 状態 ===== */
+let stream = null;
+let cameraLocked = false;
+let engine, scene, babCam;
+let animGroups = [];
+
+/* ===== Camera ===== */
+async function startCamera(){
+  if(stream) return;
+
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({
+      video:{ facingMode:"environment" }, audio:false
+    });
+  }catch(e){
+    alert("Camera failed");
+    return;
+  }
+  const v = document.getElementById("video");
+  v.srcObject = stream;
+  await v.play();
+}
+
+function lockCamera(){
+  if(!stream) return;
+  stream.getTracks().forEach(t=>t.enabled=false);
+  cameraLocked = true;
+}
+
+/* ===== Babylon ===== */
+function initBabylon(){
+  if(engine) return;
+
+  const canvas = document.getElementById("renderCanvas");
+  engine = new BABYLON.Engine(canvas,true);
+  scene  = new BABYLON.Scene(engine);
+  scene.clearColor = new BABYLON.Color4(0,0,0,0);
+
+  babCam = new BABYLON.ArcRotateCamera(
+    "cam",
+    Math.PI/2, Math.PI/2.3, 3,
+    BABYLON.Vector3.Zero(), scene
+  );
+  babCam.attachControl(canvas,true);
+
+  new BABYLON.HemisphericLight(
+    "l", new BABYLON.Vector3(0,1,0), scene
+  );
+
+  engine.runRenderLoop(()=>scene.render());
+  window.addEventListener("resize",()=>engine.resize());
+}
+
+async function loadHand(){
+  initBabylon();
+
+  const res = await BABYLON.SceneLoader.ImportMeshAsync(
+    null,"./",GLB_NAME,scene
+  );
+
+  animGroups = scene.animationGroups || [];
+
+  /* 自動フィット */
+  const meshes = res.meshes.filter(m=>m.getTotalVertices()>0);
+  const box = meshes[0].getHierarchyBoundingVectors(true);
+  const size = box.max.subtract(box.min);
+  const maxDim = Math.max(size.x,size.y,size.z);
+  const scale = 1.2 / maxDim;
+
+  meshes.forEach(m=>{
+    m.scaling.scaleInPlace(scale);
+    m.position.subtractInPlace(box.min.add(size.scale(0.5)));
+  });
+
+  babCam.radius = 2.5;
+}
+
+/* ===== Animation ===== */
+function playAnim(){
+  animGroups.forEach(g=>g.start(true));
+}
+function stopAnim(){
+  animGroups.forEach(g=>g.stop());
+}
+
+/* ===== UI ===== */
+btnCamera.onclick = startCamera;
+btnLock.onclick   = lockCamera;
+btnPlay.onclick   = async ()=>{
+  if(!scene) await loadHand();
+  playAnim();
+};
+btnStop.onclick = stopAnim;
+</script>
+</body>
+</html>
